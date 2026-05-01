@@ -1,0 +1,25 @@
+# Example baseline .gitleaks.toml for redactolabs repos.
+#
+# Copy this into a consumer repo if you have known false-positive paths
+# (seed data, test fixtures, migrations with hash-shaped strings, etc.).
+# Adjust the `paths` regexes to match your repo's layout.
+#
+# If you don't have known false positives, omit this file entirely —
+# the reusable workflow will run gitleaks with its built-in defaults.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Test fixtures and seed data"
+paths = [
+  '''.*seed.*\.(py|js|ts)''',
+  '''.*tests?/.*''',
+  '''.*fixtures?/.*''',
+  '''.*alembic/versions/.*''',
+  '''.*\.lock$''',
+]
+regexes = [
+  # Catch placeholders that the default rules sometimes flag
+  '''(?i)(fake|example|placeholder|replace[_-]?me|dummy|sample)''',
+]

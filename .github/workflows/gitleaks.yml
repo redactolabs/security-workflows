@@ -1,0 +1,56 @@
+name: gitleaks (reusable)
+
+# Reusable secret-scanning workflow. Consumer repos call this with:
+#
+#   jobs:
+#     scan:
+#       uses: redactolabs/security-workflows/.github/workflows/gitleaks.yml@v1
+#
+# Behaviour:
+#   - Pulls the consumer repo's full history (fetch-depth: 0) so it can
+#     scan every commit on a PR, not just the merge base.
+#   - Installs the pinned gitleaks binary (no marketplace action — fully
+#     free even on private repos, no license key needed).
+#   - If the consumer repo has a `.gitleaks.toml`, that config is used.
+#     Otherwise gitleaks runs with its built-in default ruleset.
+#
+# Inputs let consumers override the gitleaks version per-repo if needed.
+
+on:
+  workflow_call:
+    inputs:
+      gitleaks-version:
+        description: "Pinned gitleaks release to install"
+        type: string
+        default: "8.18.4"
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    name: gitleaks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout consumer repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install gitleaks
+        run: |
+          set -euo pipefail
+          VERSION="${{ inputs.gitleaks-version }}"
+          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${VERSION}/gitleaks_${VERSION}_linux_x64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin gitleaks
+          gitleaks version
+
+      - name: Scan
+        run: |
+          if [ -f .gitleaks.toml ]; then
+            echo "Using consumer .gitleaks.toml"
+            gitleaks detect --source . --redact --no-banner --verbose --config .gitleaks.toml
+          else
+            echo "No consumer .gitleaks.toml — running with built-in defaults"
+            gitleaks detect --source . --redact --no-banner --verbose
+          fi
