@@ -47,10 +47,15 @@ jobs:
 
       - name: Scan
         run: |
+          BASELINE_FLAG=""
+          if [ -f .gitleaks-baseline.json ]; then
+            echo "Using consumer baseline (.gitleaks-baseline.json) — historical findings ignored"
+            BASELINE_FLAG="--baseline-path .gitleaks-baseline.json"
+          fi
           if [ -f .gitleaks.toml ]; then
             echo "Using consumer .gitleaks.toml"
-            gitleaks detect --source . --redact --no-banner --verbose --config .gitleaks.toml
+            gitleaks detect --source . --redact --no-banner --verbose --config .gitleaks.toml $BASELINE_FLAG
           else
             echo "No consumer .gitleaks.toml — running with built-in defaults"
-            gitleaks detect --source . --redact --no-banner --verbose
+            gitleaks detect --source . --redact --no-banner --verbose $BASELINE_FLAG
           fi
