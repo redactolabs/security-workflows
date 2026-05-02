@@ -11,8 +11,8 @@ name: gitleaks (reusable)
 #     scan every commit on a PR, not just the merge base.
 #   - Installs the pinned gitleaks binary (no marketplace action — fully
 #     free even on private repos, no license key needed).
-#   - If the consumer repo has a `.gitleaks.toml`, that config is used.
-#     Otherwise gitleaks runs with its built-in default ruleset.
+#   - If the consumer repo has a `.gitleaks-baseline.json`, all findings
+#     listed there are ignored (legacy debt). Only NEW findings fail CI.
 #
 # Inputs let consumers override the gitleaks version per-repo if needed.
 
