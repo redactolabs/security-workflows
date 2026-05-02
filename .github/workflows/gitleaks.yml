@@ -1,5 +1,4 @@
 name: gitleaks (reusable)
-
 # Reusable secret-scanning workflow. Consumer repos call this with:
 #
 #   jobs:
@@ -13,9 +12,10 @@ name: gitleaks (reusable)
 #     free even on private repos, no license key needed).
 #   - If the consumer repo has a `.gitleaks-baseline.json`, all findings
 #     listed there are ignored (legacy debt). Only NEW findings fail CI.
+#   - On failure, sends a Slack alert to the org webhook so the security
+#     team is notified even if no one is watching the Actions tab.
 #
 # Inputs let consumers override the gitleaks version per-repo if needed.
-
 on:
   workflow_call:
     inputs:
@@ -23,6 +23,10 @@ on:
         description: "Pinned gitleaks release to install"
         type: string
         default: "8.18.4"
+    secrets:
+      SLACK_WEBHOOK_URL:
+        description: "Slack webhook for failure notifications (optional)"
+        required: false
 
 permissions:
   contents: read
@@ -59,3 +63,65 @@ jobs:
             echo "No consumer .gitleaks.toml — running with built-in defaults"
             gitleaks detect --source . --redact --no-banner --verbose $BASELINE_FLAG
           fi
+
+      - name: Notify Slack on failure
+        if: failure() && env.SLACK_WEBHOOK != ''
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ACTOR: ${{ github.actor }}
+          REF: ${{ github.ref_name }}
+        run: |
+          PAYLOAD=$(cat <<EOF
+          {
+            "blocks": [
+              {
+                "type": "header",
+                "text": {
+                  "type": "plain_text",
+                  "text": "🚨 Possible secret detected — ${REPO}",
+                  "emoji": true
+                }
+              },
+              {
+                "type": "section",
+                "fields": [
+                  { "type": "mrkdwn", "text": "*Repo:*\n\`${REPO}\`" },
+                  { "type": "mrkdwn", "text": "*Branch:*\n\`${REF}\`" },
+                  { "type": "mrkdwn", "text": "*Triggered by:*\n${ACTOR}" },
+                  { "type": "mrkdwn", "text": "*Status:*\n❌ Scan failed" }
+                ]
+              },
+              {
+                "type": "section",
+                "text": {
+                  "type": "mrkdwn",
+                  "text": "Gitleaks found something that looks like a secret. Open the run to see the file, line, and rule that matched. *Rotate first, clean up after.*"
+                }
+              },
+              {
+                "type": "actions",
+                "elements": [
+                  {
+                    "type": "button",
+                    "text": { "type": "plain_text", "text": "Open run", "emoji": true },
+                    "url": "${RUN_URL}",
+                    "style": "danger"
+                  }
+                ]
+              },
+              {
+                "type": "context",
+                "elements": [
+                  { "type": "mrkdwn", "text": "🔐 Automated alert from gitleaks reusable workflow" }
+                ]
+              }
+            ]
+          }
+          EOF
+          )
+
+          curl -s -X POST "$SLACK_WEBHOOK" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD"
