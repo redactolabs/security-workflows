@@ -79,8 +79,8 @@ spec:
     command: ["sleep"]
     args: ["infinity"]
     resources:
-      requests: { memory: "1Gi", cpu: "500m" }
-      limits:   { memory: "2Gi" }
+      requests: { memory: "2Gi", cpu: "500m" }
+      limits:   { memory: "6Gi" }
 """
             }
         }
@@ -142,12 +142,21 @@ spec:
                             # ECR auth via the pod's IRSA role (no stored creds).
                             # Syft reads ~/.docker/config.json (go-containerregistry),
                             # so write the auth directly — no docker daemon/CLI needed.
+                            #
+                            # set +x: Jenkins' sh step traces commands (set -x) by
+                            # default, which would print the ECR token + the base64
+                            # auth into the build console. Disable tracing for this
+                            # block so the credential never hits the log.
+                            set +x
                             PASSWORD=\$(aws ecr get-login-password --region ${awsRegion})
                             AUTH=\$(printf 'AWS:%s' "\$PASSWORD" | base64 | tr -d '\\n')
                             mkdir -p "\$HOME/.docker"
                             cat > "\$HOME/.docker/config.json" <<JSON
 {"auths":{"\$REGISTRY":{"auth":"\$AUTH"}}}
 JSON
+                            unset PASSWORD AUTH
+                            echo "ECR auth configured for \$REGISTRY"
+                            set -x
 
                             # Scan straight from the registry (no full docker pull).
                             syft scan "registry:\$IMAGE_REF" \\
