@@ -112,19 +112,21 @@ spec:
                     ])
                     script {
                         // Parse registry/repository/tag from the image: block.
+                        // Explicit sh calls (no helper closure — closures that call
+                        // pipeline steps like sh break Jenkins' CPS transform).
                         // sh runs on the jnlp agent container (has grep/sed); the
                         // checked-out files live in the shared workspace volume.
-                        def grabImageField = { String field ->
-                            sh(script: "grep -E '^[[:space:]]*${field}:' gitops/${valuesPath} | head -1 | sed -E 's/.*${field}:[[:space:]]*\"?([^\"[:space:]]+)\"?.*/\\1/'",
-                               returnStdout: true).trim()
-                        }
-                        def registry   = grabImageField('registry')
-                        def repository = grabImageField('repository')
-                        def tag        = grabImageField('tag')
+                        String f = "gitops/${valuesPath}"
+                        String registry = sh(returnStdout: true, script:
+                            "grep -E '^[[:space:]]*registry:' '${f}' | head -1 | sed -E 's/.*registry:[[:space:]]*\"?([^\"[:space:]]+)\"?.*/\\1/'").trim()
+                        String repository = sh(returnStdout: true, script:
+                            "grep -E '^[[:space:]]*repository:' '${f}' | head -1 | sed -E 's/.*repository:[[:space:]]*\"?([^\"[:space:]]+)\"?.*/\\1/'").trim()
+                        String tag = sh(returnStdout: true, script:
+                            "grep -E '^[[:space:]]*tag:' '${f}' | head -1 | sed -E 's/.*tag:[[:space:]]*\"?([^\"[:space:]]+)\"?.*/\\1/'").trim()
                         if (!registry || !repository || !tag) {
-                            error("Could not parse image ref from gitops/${valuesPath} (registry='${registry}' repository='${repository}' tag='${tag}')")
+                            error("Could not parse image ref from ${f} (registry='${registry}' repository='${repository}' tag='${tag}')")
                         }
-                        env.IMAGE_REF = "${registry}/${repository}:${tag}"
+                        env.IMAGE_REF = registry + "/" + repository + ":" + tag
                         echo "Deployed image to scan: ${env.IMAGE_REF}"
                     }
                 }
