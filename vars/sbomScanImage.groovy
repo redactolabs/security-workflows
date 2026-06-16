@@ -95,12 +95,11 @@ spec:
         }
 
         stages {
-            stage('Read deployed image ref') {
+            stage('Read tag & scan image') {
                 steps {
-                    // Use the git plugin's checkout (handles auth via GIT_ASKPASS)
-                    // instead of a raw https://user:token@ URL. The latter breaks
-                    // when the credential username contains characters like '.'
-                    // (curl misreads the ':' as a port). Land gitops in a subdir.
+                    // Plugin checkout (GIT_ASKPASS auth, no creds in URL).
+                    // gitops lands in ./gitops in the shared workspace volume,
+                    // readable from the tools container too.
                     checkout([
                         $class: 'GitSCM',
                         branches: [[name: "*/${gitopsBranch}"]],
@@ -110,35 +109,30 @@ spec:
                         ]],
                         extensions: [[$class: 'RelativeTargetDirectory', relativeTargetDir: 'gitops']]
                     ])
-                    script {
-                        // Parse registry/repository/tag from the image: block.
-                        // Explicit sh calls (no helper closure — closures that call
-                        // pipeline steps like sh break Jenkins' CPS transform).
-                        // sh runs on the jnlp agent container (has grep/sed); the
-                        // checked-out files live in the shared workspace volume.
-                        String f = "gitops/${valuesPath}"
-                        String registry = sh(returnStdout: true, script:
-                            "grep -E '^[[:space:]]*registry:' '${f}' | head -1 | sed -E 's/.*registry:[[:space:]]*\"?([^\"[:space:]]+)\"?.*/\\1/'").trim()
-                        String repository = sh(returnStdout: true, script:
-                            "grep -E '^[[:space:]]*repository:' '${f}' | head -1 | sed -E 's/.*repository:[[:space:]]*\"?([^\"[:space:]]+)\"?.*/\\1/'").trim()
-                        String tag = sh(returnStdout: true, script:
-                            "grep -E '^[[:space:]]*tag:' '${f}' | head -1 | sed -E 's/.*tag:[[:space:]]*\"?([^\"[:space:]]+)\"?.*/\\1/'").trim()
-                        if (!registry || !repository || !tag) {
-                            error("Could not parse image ref from ${f} (registry='${registry}' repository='${repository}' tag='${tag}')")
-                        }
-                        env.IMAGE_REF = registry + "/" + repository + ":" + tag
-                        echo "Deployed image to scan: ${env.IMAGE_REF}"
-                    }
-                }
-            }
-
-            stage('Generate image SBOM') {
-                steps {
                     container('tools') {
+                        // Everything stays in shell — the image ref is a shell
+                        // variable, never a Groovy/env value. This deliberately
+                        // avoids the CPS quirk where `env.X = ...` inside a vars/
+                        // declarative script block misresolves `env`.
                         sh """
                             set -euo pipefail
-                            # Tools: aws cli + syft. (alpine pkgs installed per-run;
-                            # hardening step = bake these into a registry image.)
+
+                            VALUES="gitops/${valuesPath}"
+                            # grep -m1 (stop at first match) instead of '| head -1'
+                            # so pipefail doesn't trip on SIGPIPE. '|| true' lets us
+                            # emit a friendly error if a field is genuinely missing.
+                            REGISTRY=\$(grep -m1 -E '^[[:space:]]*registry:'   "\$VALUES" | sed -E 's/.*registry:[[:space:]]*\"?([^\"[:space:]]+)\"?.*/\\1/'   || true)
+                            REPOSITORY=\$(grep -m1 -E '^[[:space:]]*repository:' "\$VALUES" | sed -E 's/.*repository:[[:space:]]*\"?([^\"[:space:]]+)\"?.*/\\1/' || true)
+                            TAG=\$(grep -m1 -E '^[[:space:]]*tag:'              "\$VALUES" | sed -E 's/.*tag:[[:space:]]*\"?([^\"[:space:]]+)\"?.*/\\1/'        || true)
+                            if [ -z "\$REGISTRY" ] || [ -z "\$REPOSITORY" ] || [ -z "\$TAG" ]; then
+                                echo "ERROR: could not parse image ref from \$VALUES (registry='\$REGISTRY' repository='\$REPOSITORY' tag='\$TAG')" >&2
+                                exit 1
+                            fi
+                            IMAGE_REF="\$REGISTRY/\$REPOSITORY:\$TAG"
+                            echo "Deployed image to scan: \$IMAGE_REF"
+
+                            # Tools: aws cli + syft (installed per-run; hardening
+                            # step = bake these into a registry image).
                             apk add --no-cache aws-cli >/dev/null 2>&1
                             if ! command -v syft >/dev/null 2>&1; then
                                 wget -qO- https://get.anchore.io/syft | sh -s -- -b /usr/local/bin ${syftVersion}
@@ -147,8 +141,7 @@ spec:
 
                             # ECR auth via the pod's IRSA role (no stored creds).
                             # Syft reads ~/.docker/config.json (go-containerregistry),
-                            # so we write the auth directly — no docker daemon/CLI needed.
-                            REGISTRY=\$(echo "${env.IMAGE_REF}" | cut -d/ -f1)
+                            # so write the auth directly — no docker daemon/CLI needed.
                             PASSWORD=\$(aws ecr get-login-password --region ${awsRegion})
                             AUTH=\$(printf 'AWS:%s' "\$PASSWORD" | base64 | tr -d '\\n')
                             mkdir -p "\$HOME/.docker"
@@ -157,7 +150,7 @@ spec:
 JSON
 
                             # Scan straight from the registry (no full docker pull).
-                            syft scan registry:${env.IMAGE_REF} \\
+                            syft scan "registry:\$IMAGE_REF" \\
                                 -o cyclonedx-json=sbom-image.cdx.json \\
                                 --source-name '${projectName}' \\
                                 --source-version '${projectVersion}'
