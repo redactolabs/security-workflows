@@ -97,29 +97,35 @@ spec:
         stages {
             stage('Read deployed image ref') {
                 steps {
-                    container('tools') {
-                        // Clone gitops (read-only) and extract the live image ref.
-                        withCredentials([usernamePassword(credentialsId: gitCredentials,
-                                                           usernameVariable: 'GIT_USER',
-                                                           passwordVariable: 'GIT_TOKEN')]) {
-                            sh """
-                                set -euo pipefail
-                                apk add --no-cache git yq >/dev/null 2>&1 || apk add --no-cache git >/dev/null 2>&1
-                                rm -rf gitops
-                                git clone --depth 1 --branch ${gitopsBranch} \\
-                                    "https://\${GIT_USER}:\${GIT_TOKEN}@github.com/${gitOrg}/${gitopsRepo}.git" gitops
-                            """
+                    // Use the git plugin's checkout (handles auth via GIT_ASKPASS)
+                    // instead of a raw https://user:token@ URL. The latter breaks
+                    // when the credential username contains characters like '.'
+                    // (curl misreads the ':' as a port). Land gitops in a subdir.
+                    checkout([
+                        $class: 'GitSCM',
+                        branches: [[name: "*/${gitopsBranch}"]],
+                        userRemoteConfigs: [[
+                            url:           "https://github.com/${gitOrg}/${gitopsRepo}.git",
+                            credentialsId: gitCredentials
+                        ]],
+                        extensions: [[$class: 'RelativeTargetDirectory', relativeTargetDir: 'gitops']]
+                    ])
+                    script {
+                        // Parse registry/repository/tag from the image: block.
+                        // sh runs on the jnlp agent container (has grep/sed); the
+                        // checked-out files live in the shared workspace volume.
+                        def grabImageField = { String field ->
+                            sh(script: "grep -E '^[[:space:]]*${field}:' gitops/${valuesPath} | head -1 | sed -E 's/.*${field}:[[:space:]]*\"?([^\"[:space:]]+)\"?.*/\\1/'",
+                               returnStdout: true).trim()
                         }
-                        script {
-                            def registry = sh(script: "grep -E '^[[:space:]]*registry:' gitops/${valuesPath} | head -1 | sed -E 's/.*registry:[[:space:]]*\"?([^\"]+)\"?.*/\\1/'", returnStdout: true).trim()
-                            def repository = sh(script: "grep -E '^[[:space:]]*repository:' gitops/${valuesPath} | head -1 | sed -E 's/.*repository:[[:space:]]*\"?([^\"]+)\"?.*/\\1/'", returnStdout: true).trim()
-                            def tag = sh(script: "grep -E '^[[:space:]]*tag:' gitops/${valuesPath} | head -1 | sed -E 's/.*tag:[[:space:]]*\"?([^\"]+)\"?.*/\\1/'", returnStdout: true).trim()
-                            if (!registry || !repository || !tag) {
-                                error("Could not parse image ref from gitops/${valuesPath} (registry='${registry}' repository='${repository}' tag='${tag}')")
-                            }
-                            env.IMAGE_REF = "${registry}/${repository}:${tag}"
-                            echo "Deployed image to scan: ${env.IMAGE_REF}"
+                        def registry   = grabImageField('registry')
+                        def repository = grabImageField('repository')
+                        def tag        = grabImageField('tag')
+                        if (!registry || !repository || !tag) {
+                            error("Could not parse image ref from gitops/${valuesPath} (registry='${registry}' repository='${repository}' tag='${tag}')")
                         }
+                        env.IMAGE_REF = "${registry}/${repository}:${tag}"
+                        echo "Deployed image to scan: ${env.IMAGE_REF}"
                     }
                 }
             }
@@ -129,22 +135,26 @@ spec:
                     container('tools') {
                         sh """
                             set -euo pipefail
-                            # Tools: aws cli + docker client + syft. (alpine pkgs;
-                            # later hardening = bake these into a custom image.)
-                            apk add --no-cache aws-cli docker-cli >/dev/null 2>&1
+                            # Tools: aws cli + syft. (alpine pkgs installed per-run;
+                            # hardening step = bake these into a registry image.)
+                            apk add --no-cache aws-cli >/dev/null 2>&1
                             if ! command -v syft >/dev/null 2>&1; then
                                 wget -qO- https://get.anchore.io/syft | sh -s -- -b /usr/local/bin ${syftVersion}
                             fi
                             syft version
 
-                            # ECR login via the pod's IRSA role (no stored creds).
+                            # ECR auth via the pod's IRSA role (no stored creds).
+                            # Syft reads ~/.docker/config.json (go-containerregistry),
+                            # so we write the auth directly — no docker daemon/CLI needed.
                             REGISTRY=\$(echo "${env.IMAGE_REF}" | cut -d/ -f1)
-                            aws ecr get-login-password --region ${awsRegion} \\
-                                | syft login --username AWS --password-stdin "\$REGISTRY" 2>/dev/null \\
-                                || aws ecr get-login-password --region ${awsRegion} \\
-                                   | docker login --username AWS --password-stdin "\$REGISTRY"
+                            PASSWORD=\$(aws ecr get-login-password --region ${awsRegion})
+                            AUTH=\$(printf 'AWS:%s' "\$PASSWORD" | base64 | tr -d '\\n')
+                            mkdir -p "\$HOME/.docker"
+                            cat > "\$HOME/.docker/config.json" <<JSON
+{"auths":{"\$REGISTRY":{"auth":"\$AUTH"}}}
+JSON
 
-                            # Scan straight from the registry (no full docker pull needed).
+                            # Scan straight from the registry (no full docker pull).
                             syft scan registry:${env.IMAGE_REF} \\
                                 -o cyclonedx-json=sbom-image.cdx.json \\
                                 --source-name '${projectName}' \\
