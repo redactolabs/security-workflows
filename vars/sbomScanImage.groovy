@@ -47,8 +47,10 @@
 // =============================================================================
 
 def call(Map config = [:]) {
-    String repo           = config.repo    ?: { error("sbomScanImage: 'repo' is required")    }()
-    String service        = config.service ?: { error("sbomScanImage: 'service' is required (e.g. 'web')") }()
+    String repo           = config.repo ?: { error("sbomScanImage: 'repo' is required") }()
+    // service is OPTIONAL: monorepos (e.g. redfront) use values-aws-<service>.yaml
+    // and need it; single-service repos use a plain values-aws.yaml and omit it.
+    String service        = config.get('service', '')
     String env            = config.get('env', 'staging')
     String gitOrg         = config.get('gitOrg', 'redactolabs')
     String gitopsRepo     = config.get('gitopsRepo', 'gitops')
@@ -56,11 +58,18 @@ def call(Map config = [:]) {
     String gitCredentials = config.get('gitCredentials', 'github-pat-sbom')
     String awsRegion      = config.get('awsRegion', 'ap-south-1')
     String projectName    = config.get('projectName', repo)
-    String projectVersion = config.get('projectVersion', "${env}-image")
+    // Version carries the service so a monorepo's services don't overwrite each
+    // other's DT project (redfront : staging-image-web vs ...-academy). Single-
+    // service repos stay clean (ropa-agent : staging-image).
+    String projectVersion = config.get('projectVersion',
+                                       service ? "${env}-image-${service}" : "${env}-image")
     String syftVersion    = config.get('syftVersion', 'v1.45.1')
     String weeklyCron     = config.get('weeklyCron', 'H 3 * * 1')
 
-    String valuesPath = "${repo}/${env}/values-aws-${service}.yaml"
+    // Filename differs by repo layout: with a service suffix for monorepos,
+    // plain values-aws.yaml otherwise.
+    String valuesFile = service ? "values-aws-${service}.yaml" : "values-aws.yaml"
+    String valuesPath = "${repo}/${env}/${valuesFile}"
 
     pipeline {
         agent {
