@@ -179,12 +179,18 @@ JSON
 
             stage('Publish to Dependency-Track') {
                 steps {
+                    // synchronous:false = fire-and-forget. The plugin uploads the
+                    // BOM and returns; DT processes in the background. We do NOT
+                    // wait for/poll findings, so a busy DT queue can't red an
+                    // otherwise-successful build. Flip back to true (with a
+                    // generous dependencyTrackPollingTimeout) only when we enable
+                    // build-gating on DT findings.
                     dependencyTrackPublisher(
                         artifact:           'sbom-image.cdx.json',
                         projectName:        projectName,
                         projectVersion:     projectVersion,
                         autoCreateProjects: true,
-                        synchronous:        true
+                        synchronous:        false
                     )
                 }
             }
