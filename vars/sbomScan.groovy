@@ -13,8 +13,8 @@
 //   1. Spins a Kubernetes agent pod (alpine + Syft installed at pinned version)
 //   2. Clones the target repo
 //   3. Generates a CycloneDX SBOM with Syft
-//   4. Publishes to Dependency-Track (auto-creates the project, waits for
-//      analysis, pulls findings back into the build page)
+//   4. Publishes to Dependency-Track (auto-creates the project; upload is
+//      fire-and-forget so a busy DT queue can't red the build)
 //   5. Archives the SBOM as a build artifact (audit evidence)
 //   6. Re-runs weekly so the DT project stays fresh between deploys
 //
@@ -107,22 +107,28 @@ spec:
             stage('Publish to Dependency-Track') {
                 steps {
                     // URL + API key come from the global Dependency-Track config
-                    // (Manage Jenkins -> System). synchronous:true waits for
-                    // analysis and pulls findings into this build page.
+                    // (Manage Jenkins -> System).
+                    //
+                    // synchronous:false = fire-and-forget. The plugin uploads the
+                    // BOM and returns; DT processes asynchronously in the background.
+                    // We do NOT poll for findings, so a busy DT queue can't fail an
+                    // otherwise-successful build (the "polling limit exceeded" red).
                     //
                     // ---- Build gating (enable later, after triaging backlog) ----
-                    // To FAIL builds on criticals, add to the call below:
-                    //     failedTotalCritical: 1
-                    // For high:        failedTotalHigh: 1
-                    // For "unstable" (yellow) instead of failed (red):
-                    //     unstableTotalCritical: 1
+                    // Gating REQUIRES synchronous:true (the plugin must wait for
+                    // findings to evaluate thresholds). When you turn gating on,
+                    // set synchronous:true AND raise the polling timeout, e.g.:
+                    //     synchronous: true
+                    //     dependencyTrackPollingTimeout: 25   // minutes
+                    //     failedTotalCritical: 1              // FAIL on any critical
+                    //     unstableTotalCritical: 1            // or yellow instead of red
                     // Start report-only (no thresholds) — which is this default.
                     dependencyTrackPublisher(
                         artifact:           'sbom.cdx.json',
                         projectName:        projectName,
                         projectVersion:     projectVersion,
                         autoCreateProjects: true,
-                        synchronous:        true
+                        synchronous:        false
                     )
                 }
             }
