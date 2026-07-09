@@ -59,7 +59,6 @@ spec:
         }
 
         options {
-            timestamps()
             timeout(time: 30, unit: 'MINUTES')
             disableConcurrentBuilds()
         }
